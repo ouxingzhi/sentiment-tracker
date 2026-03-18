@@ -48,9 +48,14 @@ class Settings(BaseSettings):
     llm_enabled: bool = True  # 是否启用 LLM 分析
     llm_use_gpu: bool = True  # 是否使用 GPU
 
+    # RoBERTa 模型配置
+    roberta_enabled: bool = True  # 是否启用 RoBERTa 分析
+    roberta_use_cpu: bool = True  # 是否强制使用 CPU
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"  # 忽略额外字段
 
 
 @lru_cache()
