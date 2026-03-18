@@ -23,10 +23,11 @@ aiohttp>=3.9.1
 jieba>=0.42.1
 snownlp>=0.12.3
 
-# 可选：transformers 本地模型（更精确的中文情感分析）
-# transformers>=4.36.0
-# torch>=2.1.0
-# sentencepiece>=0.1.99
+# transformers 本地 LLM 模型（更精确的中文情感分析）
+transformers>=4.36.0
+torch>=2.1.0
+sentencepiece>=0.1.99
+accelerate>=0.25.0
 
 # 数据处理
 pandas>=2.2.0

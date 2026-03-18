@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     def alert_keyword_list(self) -> List[str]:
         return [k.strip() for k in self.alert_keywords.split(",") if k.strip()]
 
+    # LLM 模型配置
+    llm_model_name: str = "qwen2.5"  # "qwen2.5" 或 "roberta"
+    llm_enabled: bool = True  # 是否启用 LLM 分析
+    llm_use_gpu: bool = True  # 是否使用 GPU
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

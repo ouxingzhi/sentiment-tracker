@@ -6,6 +6,7 @@ from loguru import logger
 from snownlp import SnowNLP
 import jieba
 import jieba.analyse
+import threading
 
 
 @dataclass
@@ -511,3 +512,280 @@ def get_sentiment_label(score: float) -> str:
         return "negative"
     else:
         return "neutral"
+
+
+# ==================== LLM 情感分析 ====================
+
+@dataclass
+class LLMSentimentResult:
+    """LLM 情感分析结果"""
+    score: float  # -1 到 1
+    label: str  # positive/negative/neutral
+    confidence: float
+    reasoning: str  # LLM 的推理过程
+    entities: Dict[str, List[str]]
+    keywords: List[str]
+
+
+class LLMAnalyzer:
+    """基于本地 LLM 的情感分析器
+
+    支持多种模型：
+    - Qwen2.5-1.5B-Instruct（默认）：阿里通义千问，中文理解强
+    - chinese-roberta-wwm-ext-large：专用于中文 NLP，更轻量
+
+    特性：
+    - 模型缓存机制（避免每次重新加载）
+    - Few-shot prompting 进行情感分析
+    - GPU/CPU 自动切换
+    - 线程安全的模型加载
+    """
+
+    _instance = None
+    _lock = threading.Lock()
+    _model_cache = {}
+
+    # Few-shot 示例
+    FEW_SHOT_EXAMPLES = [
+        {
+            "text": "贵州茅台业绩大增，净利润同比增长 50%，股价再创新高",
+            "score": 0.85,
+            "label": "positive",
+            "reasoning": "文本包含多个正面词汇：'业绩大增'、'净利润同比增长'、'再创新高'，显示强劲的财务表现和市场表现"
+        },
+        {
+            "text": "宁德时代暴跌 8%，机构警告产能过剩风险",
+            "score": -0.75,
+            "label": "negative",
+            "reasoning": "文本包含负面词汇：'暴跌'、'风险'、'产能过剩'，显示市场担忧和负面预期"
+        },
+        {
+            "text": "比亚迪今日开盘微涨，随后震荡整理",
+            "score": 0.1,
+            "label": "neutral",
+            "reasoning": "文本情绪中性，'微涨'表示轻微正面，但'震荡整理'表示市场观望，整体无明显方向"
+        },
+        {
+            "text": "中国平安拟回购股份用于员工持股计划",
+            "score": 0.6,
+            "label": "positive",
+            "reasoning": "股份回购和员工持股计划通常被视为正面信号，显示管理层对公司未来有信心"
+        },
+        {
+            "text": "恒大债务违约引发市场恐慌，地产股集体下跌",
+            "score": -0.9,
+            "label": "negative",
+            "reasoning": "文本包含强烈负面词汇：'债务违约'、'恐慌'、'下跌'，且影响范围扩大到整个行业"
+        }
+    ]
+
+    def __init__(self, model_name: str = "qwen2.5"):
+        """初始化 LLM 分析器
+
+        Args:
+            model_name: 模型名称，可选 "qwen2.5" 或 "roberta"
+        """
+        self.model_name = model_name
+        self.pipeline = None
+        self._ensure_model_loaded()
+
+    def _ensure_model_loaded(self):
+        """确保模型已加载（带缓存）"""
+        if self.model_name in self._model_cache:
+            self.pipeline = self._model_cache[self.model_name]
+            logger.info(f"使用缓存的 {self.model_name} 模型")
+            return
+
+        try:
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
+
+            if self.model_name == "qwen2.5":
+                # Qwen2.5-1.5B-Instruct
+                model_path = "Qwen/Qwen2.5-1.5B-Instruct"
+                logger.info(f"正在加载 Qwen2.5-1.5B-Instruct 模型...")
+            else:
+                # chinese-roberta-wwm-ext-large
+                model_path = "hfl/chinese-roberta-wwm-ext-large"
+                logger.info(f"正在加载 chinese-roberta-wwm-ext-large 模型...")
+
+            # 尝试使用 GPU，如果显存不足则回退到 CPU
+            device_map = "auto"  # 自动选择 GPU 或 CPU
+
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+            )
+
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_path,
+                device_map=device_map,
+                trust_remote_code=True,
+                torch_dtype="auto",  # 自动选择精度
+            )
+
+            self.pipeline = pipeline(
+                "sentiment-analysis",
+                model=model,
+                tokenizer=tokenizer,
+                return_all_scores=True,
+            )
+
+            # 缓存模型
+            self._model_cache[self.model_name] = self.pipeline
+            logger.info(f"模型 {model_path} 加载完成")
+
+        except Exception as e:
+            logger.error(f"模型加载失败：{e}，将使用规则-based 分析器")
+            self.pipeline = None
+
+    def analyze(self, text: str) -> LLMSentimentResult:
+        """使用 LLM 分析文本情感
+
+        Args:
+            text: 待分析的文本
+
+        Returns:
+            LLMSentimentResult: 情感分析结果
+        """
+        if not text or not text.strip():
+            return LLMSentimentResult(
+                score=0.0,
+                label="neutral",
+                confidence=0.5,
+                reasoning="空文本",
+                entities={"stocks": [], "companies": [], "people": []},
+                keywords=[]
+            )
+
+        # 如果模型加载失败，使用规则分析器回退
+        if self.pipeline is None:
+            return self._fallback_analyze(text)
+
+        try:
+            # 构建 few-shot prompt
+            prompt = self._build_prompt(text)
+
+            # 使用 LLM 分析
+            result = self.pipeline(prompt[:512])  # 限制长度避免超出
+
+            # 解析结果
+            return self._parse_llm_result(result, text)
+
+        except Exception as e:
+            logger.warning(f"LLM 分析失败：{e}，使用回退方案")
+            return self._fallback_analyze(text)
+
+    def _build_prompt(self, text: str) -> str:
+        """构建 few-shot prompt"""
+        prompt_parts = ["请分析以下财经文本的情感倾向。"]
+        prompt_parts.append("\n参考示例：\n")
+
+        for example in self.FEW_SHOT_EXAMPLES:
+            prompt_parts.append(f"文本：{example['text']}\n")
+            prompt_parts.append(f"情感：{example['label']} (分数：{example['score']})\n")
+            prompt_parts.append(f"推理：{example['reasoning']}\n\n")
+
+        prompt_parts.append(f"请分析：{text}\n")
+        prompt_parts.append("请给出：1)情感标签 (positive/negative/neutral) 2)分数 (-1 到 1) 3)推理过程 4)识别的实体\n")
+
+        return "".join(prompt_parts)
+
+    def _parse_llm_result(self, result: List[List[Dict]], text: str) -> LLMSentimentResult:
+        """解析 LLM 输出结果"""
+        # transformers pipeline 返回格式：[[{'label': 'LABEL_1', 'score': 0.9}]]
+        if result and result[0]:
+            top_result = result[0][0]
+            label_raw = top_result.get('label', 'LABEL_1')
+            score = top_result.get('score', 0.5)
+
+            # 映射标签
+            if '1' in label_raw or 'POS' in label_raw.upper():
+                label = "positive"
+                mapped_score = score
+            elif '0' in label_raw or 'NEG' in label_raw.upper():
+                label = "negative"
+                mapped_score = -score
+            else:
+                label = "neutral"
+                mapped_score = 0.0
+
+            # 提取实体（使用规则方法）
+            entities = self._extract_entities_simple(text)
+
+            # 提取关键词
+            keywords = self._extract_keywords_simple(text)
+
+            return LLMSentimentResult(
+                score=max(-1.0, min(1.0, mapped_score)),
+                label=label,
+                confidence=min(score + 0.3, 1.0),
+                reasoning=f"LLM 分析结果：{label}, 置信度：{score:.2f}",
+                entities=entities,
+                keywords=keywords
+            )
+
+        return self._fallback_analyze(text)
+
+    def _fallback_analyze(self, text: str) -> LLMSentimentResult:
+        """回退到规则-based 分析"""
+        analyzer = FinancialSentimentAnalyzer()
+        result = analyzer.analyze(text)
+
+        return LLMSentimentResult(
+            score=result.score,
+            label=result.label,
+            confidence=result.confidence,
+            reasoning="使用规则分析器（LLM 模型不可用）",
+            entities=result.entities,
+            keywords=result.keywords
+        )
+
+    def _extract_entities_simple(self, text: str) -> Dict[str, List[str]]:
+        """简单实体提取"""
+        entities = {"stocks": [], "companies": [], "people": []}
+
+        # 股票代码
+        for match in re.finditer(r'\$([A-Z]{1,5})\b', text):
+            entities["stocks"].append(match.group(1))
+        for match in re.finditer(r'(\d{6})(?:\.(SH|SZ))?', text):
+            code = match.group(1)
+            suffix = match.group(2) or ('SH' if code.startswith('6') else 'SZ')
+            entities["stocks"].append(f"{code}.{suffix}")
+
+        # 公司名
+        for pattern in [r'([^\s,.;:,.]{2,20}公司)', r'([^\s,.;:,.]{2,20}集团)']:
+            for match in re.finditer(pattern, text):
+                company = match.group(1)
+                if company and company not in entities["companies"]:
+                    entities["companies"].append(company)
+
+        entities["stocks"] = list(set(entities["stocks"]))
+        entities["companies"] = list(set(entities["companies"]))
+        entities["people"] = list(set(entities["people"]))
+
+        return entities
+
+    def _extract_keywords_simple(self, text: str) -> List[str]:
+        """简单关键词提取"""
+        try:
+            words = jieba.analyse.extract_tags(text, topK=10)
+            return list(words)
+        except:
+            words = list(jieba.cut(text))
+            return [w for w in words if len(w) >= 2][:10]
+
+    @classmethod
+    def get_instance(cls, model_name: str = "qwen2.5") -> "LLMAnalyzer":
+        """获取单例实例（线程安全）"""
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls(model_name=model_name)
+        return cls._instance
+
+    @classmethod
+    def clear_cache(cls):
+        """清空模型缓存（释放显存）"""
+        with cls._lock:
+            cls._model_cache.clear()
+            cls._instance = None
