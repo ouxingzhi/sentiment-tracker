@@ -8,6 +8,7 @@ from loguru import logger
 from snownlp import SnowNLP
 import jieba
 import jieba.analyse
+from .financial_sentiment import FinancialSentimentAnalyzer as FinAnalyzer
 
 
 @dataclass
@@ -297,21 +298,61 @@ class RuleBasedAnalyzer(BaseAnalyzer):
 
 
 class HybridAnalyzer:
-    """混合分析器 - 纯本地版本，结合规则和 SnowNLP"""
+    """混合分析器 - 纯本地版本，结合规则、SnowNLP 和金融情感词典"""
 
-    def __init__(self):
+    def __init__(self, use_financial_dict: bool = True):
+        """初始化混合分析器
+
+        Args:
+            use_financial_dict: 是否使用金融情感词典增强分析
+        """
         self.rule_analyzer = RuleBasedAnalyzer()
+        self.use_financial_dict = use_financial_dict
+        if use_financial_dict:
+            self.financial_analyzer = FinAnalyzer()
 
     async def analyze(self, text: str, use_llm: bool = False) -> SentimentResult:
-        """分析情感（纯本地，use_llm 参数已废弃）"""
-        # 使用规则分析器进行分析（已内置 SnowNLP 补充）
-        return await self.rule_analyzer.analyze(text)
+        """分析情感（纯本地，use_llm 参数已废弃）
+
+        Args:
+            text: 待分析文本
+            use_llm: 已废弃，保留用于兼容性
+
+        Returns:
+            SentimentResult: 情感分析结果
+        """
+        if self.use_financial_dict:
+            # 使用金融情感分析器进行分析（更准确）
+            fin_result = self.financial_analyzer.analyze(text)
+            return SentimentResult(
+                score=fin_result.score,
+                label=fin_result.label,
+                confidence=fin_result.confidence,
+                keywords=fin_result.keywords,
+                entities=fin_result.entities
+            )
+        else:
+            # 使用规则分析器进行分析（已内置 SnowNLP 补充）
+            return await self.rule_analyzer.analyze(text)
 
     async def batch_analyze(self, texts: List[str], use_llm: bool = False) -> List[SentimentResult]:
         """批量分析"""
         return await asyncio.gather(*[
             self.analyze(text, use_llm) for text in texts
         ])
+
+    def analyze_sync(self, text: str) -> SentimentResult:
+        """同步分析接口（适用于金融词典模式）"""
+        if self.use_financial_dict:
+            fin_result = self.financial_analyzer.analyze(text)
+            return SentimentResult(
+                score=fin_result.score,
+                label=fin_result.label,
+                confidence=fin_result.confidence,
+                keywords=fin_result.keywords,
+                entities=fin_result.entities
+            )
+        raise RuntimeError("金融词典模式未启用，请使用 async analyze 方法")
 
 
 # 股票实体识别器
