@@ -1,17 +1,13 @@
-"""情感分析引擎 - 针对中文财经文本优化"""
+"""情感分析引擎 - 针对中文财经文本优化（纯本地版本）"""
 import asyncio
-import json
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 import re
 from loguru import logger
-from openai import AsyncOpenAI
 from snownlp import SnowNLP
 import jieba
 import jieba.analyse
-
-from config.settings import settings
 
 
 @dataclass
@@ -71,6 +67,13 @@ class RuleBasedAnalyzer(BaseAnalyzer):
         # 成语类
         "蒸蒸日上", "如日中天", "欣欣向荣", "蓬勃发展", "方兴未艾",
         "势如破竹", "扶摇直上", "步步高升", "财源广进", "日进斗金",
+        # A 股特色词汇
+        "开门红", "红盘", "飘红", "翻红", "拉升", "直线拉升",
+        "秒板", "封死涨停", "涨停板", "跌停板打开", "地天板",
+        "反包", "弱转强", "分歧转一致", "主力进场", "机构加持",
+        # 政策利好
+        "稳增长", "促发展", "高质量发展", "政策底", "市场底",
+        "估值底", "三底共振", "利好兑现", "预期改善",
     }
 
     NEGATIVE_WORDS = {
@@ -103,6 +106,12 @@ class RuleBasedAnalyzer(BaseAnalyzer):
         "一落千丈", "江河日下", "日薄西山", "每况愈下", "岌岌可危",
         "风雨飘摇", "四面楚歌", "难以为继", "入不敷出", "资不抵债",
         "量价齐跌", "价跌量增", "资金出逃", "一片绿",
+        # A 股特色词汇
+        "绿盘", "翻绿", "飘绿", "大盘跳水", "千股跌停",
+        "跌停潮", "关灯吃面", "核按钮", "天地板", "一字跌停",
+        "流动性枯竭", "踩踏", "多杀多", "获利盘出逃", "主力出逃",
+        # 政策利空
+        "强监管", "去杠杆", "防风险", "调控加码", "政策收紧",
     }
 
     # 程度副词 - 影响情感强度
@@ -287,91 +296,16 @@ class RuleBasedAnalyzer(BaseAnalyzer):
         return entities
 
 
-class LLMAnalyzer(BaseAnalyzer):
-    """LLM 情感分析器 (准确，需 API 调用)"""
-
-    SYSTEM_PROMPT = """你是一个专业的财经情感分析师，擅长分析中文财经文本的情感倾向。
-
-请分析文本并返回 JSON 格式：
-{
-    "sentiment": "positive/negative/neutral",
-    "score": -1 到 1 之间的数字（正数表示正面，负数表示负面）,
-    "confidence": 0 到 1 之间的置信度，
-    "keywords": ["关键词 1", "关键词 2"],
-    "entities": {
-        "stocks": [{"symbol": "AAPL", "name": "苹果", "relevance": 0.9}],
-        "companies": ["公司名"],
-        "people": ["人名"]
-    },
-    "reasoning": "简短的分析理由（50 字以内）"
-}
-
-注意：
-- 识别股票代码（A 股、港股、美股）
-- 识别中文公司简称
-- 分析情感强度"""
-
-    def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = settings.openai_model
-
-    async def analyze(self, text: str) -> SentimentResult:
-        """使用 LLM 分析情感"""
-        if not settings.openai_api_key:
-            logger.warning("OpenAI API 未配置，回退到规则分析")
-            return await RuleBasedAnalyzer().analyze(text)
-
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": f"分析以下文本：\n\n{text[:2000]}"}
-                ],
-                temperature=0.3,
-                response_format={"type": "json_object"}
-            )
-
-            result = json.loads(response.choices[0].message.content)
-
-            return SentimentResult(
-                score=result["score"],
-                label=result["sentiment"],
-                confidence=result["confidence"],
-                keywords=result["keywords"],
-                entities=result["entities"]
-            )
-        except Exception as e:
-            logger.error(f"LLM 分析失败：{e}")
-            # 回退到规则分析
-            return await RuleBasedAnalyzer().analyze(text)
-
-
 class HybridAnalyzer:
-    """混合分析器 - 先规则快速分析，重要文章再用 LLM 深入"""
+    """混合分析器 - 纯本地版本，结合规则和 SnowNLP"""
 
     def __init__(self):
         self.rule_analyzer = RuleBasedAnalyzer()
-        self.llm_analyzer = LLMAnalyzer()
 
     async def analyze(self, text: str, use_llm: bool = False) -> SentimentResult:
-        """分析情感
-
-        Args:
-            text: 要分析的文本
-            use_llm: 是否使用 LLM 进行更精确的分析
-        """
-        # 先用规则快速分析
-        result = await self.rule_analyzer.analyze(text)
-
-        # 如果结果极端或明确要求，使用 LLM
-        if use_llm or abs(result.score) > 0.5:
-            llm_result = await self.llm_analyzer.analyze(text)
-            # 如果 LLM 置信度更高，使用 LLM 结果
-            if llm_result.confidence > result.confidence:
-                return llm_result
-
-        return result
+        """分析情感（纯本地，use_llm 参数已废弃）"""
+        # 使用规则分析器进行分析（已内置 SnowNLP 补充）
+        return await self.rule_analyzer.analyze(text)
 
     async def batch_analyze(self, texts: List[str], use_llm: bool = False) -> List[SentimentResult]:
         """批量分析"""

@@ -2,7 +2,6 @@
 from .news_collector import (
     BaseCollector,
     RSSCollector,
-    NewsAPICollector,
     WeiboCollector,
     MultiSourceCollector,
 )
@@ -11,14 +10,21 @@ from .xueqiu_collector import (
     XueqiuHotTopicCollector,
     XueqiuStockCollector,
 )
+from .eastmoney_collector import (
+    EastmoneyCollector,
+    GubaCollector,
+    TonghuashunCollector,
+)
 
 __all__ = [
     "BaseCollector",
     "RSSCollector",
-    "NewsAPICollector",
     "WeiboCollector",
     "MultiSourceCollector",
     "XueqiuCollector",
     "XueqiuHotTopicCollector",
     "XueqiuStockCollector",
+    "EastmoneyCollector",
+    "GubaCollector",
+    "TonghuashunCollector",
 ]

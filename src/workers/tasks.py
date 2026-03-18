@@ -3,6 +3,7 @@ from celery import Celery
 from datetime import datetime, timedelta
 from loguru import logger
 import asyncio
+from sqlalchemy import select, func, and_
 
 from config.settings import settings
 

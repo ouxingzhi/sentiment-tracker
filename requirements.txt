@@ -19,10 +19,14 @@ kombu>=5.3.5
 httpx>=0.26.0
 aiohttp>=3.9.1
 
-# NLP & ML
-openai>=1.12.0
+# NLP & ML (本地中文情感分析)
 jieba>=0.42.1
 snownlp>=0.12.3
+
+# 可选：transformers 本地模型（更精确的中文情感分析）
+# transformers>=4.36.0
+# torch>=2.1.0
+# sentencepiece>=0.1.99
 
 # 数据处理
 pandas>=2.2.0
@@ -33,6 +37,7 @@ pydantic>=2.5.3
 python-dotenv>=1.0.0
 loguru>=0.7.2
 schedule>=1.2.0
+python-dateutil>=2.8.2
 
 # RSS/新闻
 feedparser>=6.0.10
@@ -42,3 +47,6 @@ html2text>=2020.1.16
 
 # 监控
 prometheus-client>=0.19.0
+
+# Telegram Bot (用于推送)
+python-telegram-bot>=20.0
